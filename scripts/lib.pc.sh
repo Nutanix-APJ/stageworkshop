@@ -429,56 +429,83 @@ function pc_auth() {
   local  _http_body
   local _pc_version
   local       _test
+  local CURL_HTTP_OPTS=" --max-time 25 --silent --header Content-Type:application/json --header Accept:application/json  --insecure "
 
   # TODO:50 FUTURE: pass AUTH_SERVER argument
 
+set -x
+
   log "Add Directory ${AUTH_DOMAIN}"
   _http_body=$(cat <<EOF
-{"name":"${AUTH_DOMAIN}","domain":"${AUTH_FQDN}","directoryType":"ACTIVE_DIRECTORY","connectionType":"LDAP",
-EOF
-  )
-
-  # shellcheck disable=2206
-  _pc_version=(${PC_VERSION//./ })
-
-  log "Checking if PC_VERSION ${PC_VERSION} >= 5.9"
-  if (( ${_pc_version[0]} >= 5 && ${_pc_version[1]} >= 9 )); then
-    _http_body+=$(cat <<EOF
-"groupSearchType":"RECURSIVE","directoryUrl":"ldap://${AUTH_HOST}:${LDAP_PORT}",
-EOF
-)
-  else
-    _http_body+=" \"directoryUrl\":\"ldaps://${AUTH_HOST}/\","
-  fi
-
-  _http_body+=$(cat <<EOF
-    "serviceAccountUsername":"${AUTH_ADMIN_USER}",
-    "serviceAccountPassword":"${AUTH_ADMIN_PASS}"
+{
+  "api_version": "3.1",
+    "metadata": {
+        "kind": "directory_service"
+    },
+  "spec": {
+    "name": "${AUTH_DOMAIN}",
+    "resources": {
+      "url": "ldap://${AUTH_HOST}:${LDAP_PORT}",
+      "directory_type": "ACTIVE_DIRECTORY",
+      "domain_name": "${AUTH_FQDN}",
+      "service_account": {
+        "username": "${AUTH_ADMIN_USER}",
+        "password": "${AUTH_ADMIN_PASS}"
+      }
+    }
   }
+}
 EOF
   )
 
-  _test=$(curl ${CURL_POST_OPTS} --user ${PRISM_ADMIN}:${PE_PASSWORD} -X POST --data "${_http_body}" \
-    https://localhost:9440/PrismGateway/services/rest/v1/authconfig/directories)
-  log "directories: _test=|${_test}|_http_body=|${_http_body}|"
+  _task_id=$(curl ${CURL_POST_OPTS} --user ${PRISM_ADMIN}:${PE_PASSWORD} -X POST --data "${_http_body}" https://localhost:9440/api/nutanix/v3/directory_services | jq -r '.status.execution_context.task_uuid' | tr -d \")
+
+  #log "Task uuid for the Auth Source Create is " $_task_id " ....."
+
+  #if [ -z "$_task_id" ]; then
+  #     log "Auth Source Create has encountered an error..."
+  #else
+  #     log "Auth Source Create started.."
+  #     set _loops=0 # Reset the loop counter so we restart the amount of loops we need to run
+       # Run the progess checker
+  #     loop
+  #fi
+
+  #log "directories: _task_id=|${_task_id}|_http_body=|${_http_body}|"
+
+  sleep 60
 
   log "Add Role Mappings to Groups for PC logins (not projects, which are separate)..."
-  #TODO:20 hardcoded role mappings
-  for _group in 'SSP Admins' 'SSP Power Users' 'SSP Developers' 'SSP Basic Users'; do
+
     _http_body=$(cat <<EOF
-    {
-      "directoryName":"${AUTH_SERVER}",
-      "role":"ROLE_CLUSTER_ADMIN",
-      "entityType":"GROUP",
-      "entityValues":["${_group}"]
-    }
+{
+    "directoryName": "${AUTH_DOMAIN}",
+    "role": "ROLE_CLUSTER_ADMIN",
+    "entityType": "GROUP",
+    "entityValues": [
+        "${AUTH_ADMIN_GROUP}"
+    ]
+}
 EOF
     )
-    _test=$(curl ${CURL_POST_OPTS} \
-      --user ${PRISM_ADMIN}:${PE_PASSWORD} -X POST --data "${_http_body}" \
-      https://localhost:9440/PrismGateway/services/rest/v1/authconfig/directories/${AUTH_SERVER}/role_mappings)
-    log "Cluster Admin=${_group}, _test=|${_test}|"
-  done
+
+  _task_id=$(curl ${CURL_POST_OPTS} --user ${PRISM_ADMIN}:${PE_PASSWORD} -X POST --data "${_http_body}" https://localhost:9440/PrismGateway/services/rest/v1/authconfig/directories/${AUTH_DOMAIN}/role_mappings?entityType=GROUP&role=ROLE_CLUSTER_ADMIN)
+
+  #log "Task uuid for the Auth Source Create is " $_task_id " ....."
+
+  #if [ -z "$_task_id" ]; then
+  #     log "Role Create has encountered an error..."
+  #else
+  #     log "Role Create started.."
+  #     set _loops=0 # Reset the loop counter so we restart the amount of loops we need to run
+  #     # Run the progess checker
+  #     loop
+  #fi
+
+  log "Cluster Admin=${AUTH_ADMIN_GROUP}, _task_id=|${_task_id}|_http_body=|${_http_body}| "
+
+set +x
+
 }
 
 ###################################################################################################################################################
@@ -893,7 +920,9 @@ EOF
 function configure_era() {
   local CURL_HTTP_OPTS=" --max-time 25 --silent --header Content-Type:application/json --header Accept:application/json  --insecure "
 
-set -x
+#set -x
+
+log "Starting Era Config"
 
 log "PE Cluster IP |${PE_HOST}|"
 log "EraServer IP |${ERA_HOST}|"
@@ -901,14 +930,14 @@ log "EraServer IP |${ERA_HOST}|"
 ##  Create the EraManaged network inside Era ##
 log "Reset Default Era Password"
 
-  _reset_passwd=$(curl ${CURL_HTTP_OPTS} -u ${ERA_USER}:${ERA_Default_PASSWORD} -X POST "https://${ERA_HOST}/era/v0.8/auth/update" --data '{ "password": "'${ERA_PASSWORD}'"}' | jq -r '.status' | tr -d \")
+  _reset_passwd=$(curl ${CURL_HTTP_OPTS} -u ${ERA_USER}:${ERA_Default_PASSWORD} -X POST "https://${ERA_HOST}/era/v0.9/auth/update" --data '{ "password": "'${ERA_PASSWORD}'"}' | jq -r '.status' | tr -d \")
 
 log "Password Reset |${_reset_passwd}|"
 
 ##  Accept EULA ##
 log "Accept Era EULA"
 
-  _accept_eula=$(curl ${CURL_HTTP_OPTS} -u ${ERA_USER}:${ERA_PASSWORD} -X POST "https://${ERA_HOST}/era/v0.8/auth/validate" --data '{ "eulaAccepted": true }' | jq -r '.status' | tr -d \")
+  _accept_eula=$(curl ${CURL_HTTP_OPTS} -u ${ERA_USER}:${ERA_PASSWORD} -X POST "https://${ERA_HOST}/era/v0.9/auth/validate" --data '{ "eulaAccepted": true }' | jq -r '.status' | tr -d \")
 
 log "Accept EULA |${_accept_eula}|"
 
@@ -935,7 +964,7 @@ HTTP_JSON_BODY=$(cat <<EOF
 EOF
 )
 
-  _era_cluster_id=$(curl ${CURL_HTTP_OPTS} -u ${ERA_USER}:${ERA_PASSWORD} -X POST "https://${ERA_HOST}/era/v0.8/clusters" --data "${HTTP_JSON_BODY}" | jq -r '.id' | tr -d \")
+  _era_cluster_id=$(curl ${CURL_HTTP_OPTS} -u ${ERA_USER}:${ERA_PASSWORD} -X POST "https://${ERA_HOST}/era/v0.9/clusters" --data "${HTTP_JSON_BODY}" | jq -r '.id' | tr -d \")
 
 log "Era Cluster ID: |${_era_cluster_id}|"
 
@@ -946,12 +975,12 @@ ClusterJSON='{"ip_address": "'${PE_HOST}'","port": "9440","protocol": "https","d
 
 echo $ClusterJSON > cluster.json
 
-  _task_id=$(curl -k -H 'Content-Type: multipart/form-data' -u ${ERA_USER}:${ERA_PASSWORD} -X POST "https://${ERA_HOST}/era/v0.8/clusters/${_era_cluster_id}/json" -F file="@"cluster.json)
+  _task_id=$(curl -k -H 'Content-Type: multipart/form-data' -u ${ERA_USER}:${ERA_PASSWORD} -X POST "https://${ERA_HOST}/era/v0.9/clusters/${_era_cluster_id}/json" -F file="@"cluster.json)
 
 ##  Add the Secondary Network inside Era ##
 log "Create ${NW2_NAME} DHCP/IPAM Network"
 
-  _dhcp_network_id=$(curl ${CURL_HTTP_OPTS} -u ${ERA_USER}:${ERA_PASSWORD} -X POST "https://${ERA_HOST}/era/v0.8/resources/networks" --data '{"name": "'${NW2_NAME}'","type": "DHCP"}' | jq -r '.id' | tr -d \")
+  _dhcp_network_id=$(curl ${CURL_HTTP_OPTS} -u ${ERA_USER}:${ERA_PASSWORD} -X POST "https://${ERA_HOST}/era/v0.9/resources/networks" --data '{"name": "'${NW2_NAME}'","type": "DHCP"}' | jq -r '.id' | tr -d \")
 
 log "Created ${NW2_NAME} Network with Network ID |${_dhcp_network_id}|"
 
@@ -990,7 +1019,7 @@ HTTP_JSON_BODY=$(cat <<EOF
 EOF
 )
 
-  _static_network_id=$(curl ${CURL_HTTP_OPTS} -u ${ERA_USER}:${ERA_PASSWORD} -X POST "https://${ERA_HOST}/era/v0.8/resources/networks" --data "${HTTP_JSON_BODY}" | jq -r '.id' | tr -d \")
+  _static_network_id=$(curl ${CURL_HTTP_OPTS} -u ${ERA_USER}:${ERA_PASSWORD} -X POST "https://${ERA_HOST}/era/v0.9/resources/networks" --data "${HTTP_JSON_BODY}" | jq -r '.id' | tr -d \")
 
 log "Created ${NW3_NAME} Network with Network ID |${_static_network_id}|"
 
@@ -1016,7 +1045,7 @@ HTTP_JSON_BODY=$(cat <<EOF
 EOF
 )
 
-  _primary_network_profile_id=$(curl ${CURL_HTTP_OPTS} -u ${ERA_USER}:${ERA_PASSWORD} -X POST "https://${ERA_HOST}/era/v0.8/profiles" --data "${HTTP_JSON_BODY}" | jq -r '.id' | tr -d \")
+  _primary_network_profile_id=$(curl ${CURL_HTTP_OPTS} -u ${ERA_USER}:${ERA_PASSWORD} -X POST "https://${ERA_HOST}/era/v0.9/profiles" --data "${HTTP_JSON_BODY}" | jq -r '.id' | tr -d \")
 
 log "Created Primary-MSSQL-NETWORK Network Profile with ID |${_primary_network_profile_id}|"
 
@@ -1042,7 +1071,7 @@ HTTP_JSON_BODY=$(cat <<EOF
 EOF
 )
 
-  _postgres_network_profile_id=$(curl ${CURL_HTTP_OPTS} -u ${ERA_USER}:${ERA_PASSWORD} -X POST "https://${ERA_HOST}/era/v0.8/profiles" --data "${HTTP_JSON_BODY}" | jq -r '.id' | tr -d \")
+  _postgres_network_profile_id=$(curl ${CURL_HTTP_OPTS} -u ${ERA_USER}:${ERA_PASSWORD} -X POST "https://${ERA_HOST}/era/v0.9/profiles" --data "${HTTP_JSON_BODY}" | jq -r '.id' | tr -d \")
 
 log "Created Primary_PGSQL_NETWORK Network Profile with ID |${_postgres_network_profile_id}|"
 
@@ -1068,7 +1097,7 @@ HTTP_JSON_BODY=$(cat <<EOF
 EOF
 )
 
-  _oracle_network_profile_id=$(curl ${CURL_HTTP_OPTS} -u ${ERA_USER}:${ERA_PASSWORD} -X POST "https://${ERA_HOST}/era/v0.8/profiles" --data "${HTTP_JSON_BODY}" | jq -r '.id' | tr -d \")
+  _oracle_network_profile_id=$(curl ${CURL_HTTP_OPTS} -u ${ERA_USER}:${ERA_PASSWORD} -X POST "https://${ERA_HOST}/era/v0.9/profiles" --data "${HTTP_JSON_BODY}" | jq -r '.id' | tr -d \")
 
 log "Created Primary_ORACLE_NETWORK Network Profile with ID |${_oracle_network_profile_id}|"
 
@@ -1094,7 +1123,7 @@ HTTP_JSON_BODY=$(cat <<EOF
 EOF
 )
 
-  _eramanagaed_network_profile_id=$(curl ${CURL_HTTP_OPTS} -u ${ERA_USER}:${ERA_PASSWORD} -X POST "https://${ERA_HOST}/era/v0.8/profiles" --data "${HTTP_JSON_BODY}" | jq -r '.id' | tr -d \")
+  _eramanagaed_network_profile_id=$(curl ${CURL_HTTP_OPTS} -u ${ERA_USER}:${ERA_PASSWORD} -X POST "https://${ERA_HOST}/era/v0.9/profiles" --data "${HTTP_JSON_BODY}" | jq -r '.id' | tr -d \")
 
 log "Created ERAMANAGED_MSSQL_NETWORK Network Profile with ID |${_eramanagaed_network_profile_id}|"
 
@@ -1129,7 +1158,7 @@ HTTP_JSON_BODY=$(cat <<EOF
 EOF
 )
 
-  _xs_compute_profile_id=$(curl ${CURL_HTTP_OPTS} -u ${ERA_USER}:${ERA_PASSWORD} -X POST "https://${ERA_HOST}/era/v0.8/profiles" --data "${HTTP_JSON_BODY}" | jq -r '.id' | tr -d \")
+  _xs_compute_profile_id=$(curl ${CURL_HTTP_OPTS} -u ${ERA_USER}:${ERA_PASSWORD} -X POST "https://${ERA_HOST}/era/v0.9/profiles" --data "${HTTP_JSON_BODY}" | jq -r '.id' | tr -d \")
 
 log "Created CUSTOM_EXTRA_SMALL Compute Profile with ID |${_xs_compute_profile_id}|"
 
@@ -1164,7 +1193,7 @@ HTTP_JSON_BODY=$(cat <<EOF
 EOF
 )
 
-  _oracle_small_compute_profile_id=$(curl ${CURL_HTTP_OPTS} -u ${ERA_USER}:${ERA_PASSWORD} -X POST "https://${ERA_HOST}/era/v0.8/profiles" --data "${HTTP_JSON_BODY}" | jq -r '.id' | tr -d \")
+  _oracle_small_compute_profile_id=$(curl ${CURL_HTTP_OPTS} -u ${ERA_USER}:${ERA_PASSWORD} -X POST "https://${ERA_HOST}/era/v0.9/profiles" --data "${HTTP_JSON_BODY}" | jq -r '.id' | tr -d \")
 
 log "Created ORACLE_SMALL Compute Profile with ID |${_oracle_small_compute_profile_id}|"
 
@@ -1173,6 +1202,7 @@ log "Create the NTNXLAB Domain Profile"
 
 HTTP_JSON_BODY=$(cat <<EOF
 {
+  "engineType": "sqlserver_database",
   "type": "WindowsDomain",
   "topology": "ALL",
   "dbVersion": "ALL",
@@ -1181,32 +1211,74 @@ HTTP_JSON_BODY=$(cat <<EOF
     {
       "name": "DOMAIN_NAME",
       "value": "ntnxlab.local",
+      "secure": false,
       "description": "Name of the Windows domain"
     },
     {
       "name": "DOMAIN_USER_NAME",
       "value": "Administrator@ntnxlab.local",
+      "secure": false,
       "description": "Username with permission to join computer to domain"
     },
     {
       "name": "DOMAIN_USER_PASSWORD",
       "value": "nutanix/4u",
+      "secure": false,
       "description": "Password for the username with permission to join computer to domain"
     },
     {
       "name": "DB_SERVER_OU_PATH",
       "value": "",
+      "secure": false,
       "description": "Custom OU path for database servers"
     },
     {
       "name": "CLUSTER_OU_PATH",
       "value": "",
+      "secure": false,
       "description": "Custom OU path for server clusters"
     },
     {
-      "name": "ADD_PERMISSION_ON_OU",
+      "name": "SQL_SERVICE_ACCOUNT_USER",
+      "value": "Administrator@ntnxlab.local",
+      "secure": false,
+      "description": "Sql service account username"
+    },
+    {
+      "name": "SQL_SERVICE_ACCOUNT_PASSWORD",
+      "value": "nutanix/4u",
+      "secure": false,
+      "description": "Sql service account password"
+    },
+    {
+      "name": "ALLOW_SERVICE_ACCOUNT_OVERRRIDE",
+      "value": false,
+      "secure": false,
+      "description": "Allow override of sql service account in provisioning workflows"
+    },
+    {
+      "name": "ERA_WORKER_SERVICE_USER",
+      "value": "Administrator@ntnxlab.local",
+      "secure": false,
+      "description": "Era worker service account username"
+    },
+    {
+      "name": "ERA_WORKER_SERVICE_PASSWORD",
+      "value": "nutanix/4u",
+      "secure": false,
+      "description": "Era worker service account password"
+    },
+    {
+      "name": "RESTART_SERVICE",
       "value": "",
-      "description": "Grant server clusters permission on OU"
+      "secure": false,
+      "description": "Restart sql service on the dbservers"
+    },
+    {
+      "name": "UPDATE_CREDENTIALS_IN_DBSERVERS",
+      "value": "true",
+      "secure": false,
+      "description": "Update the credentials in all the dbservers"
     }
   ],
   "name": "NTNXLAB"
@@ -1214,7 +1286,7 @@ HTTP_JSON_BODY=$(cat <<EOF
 EOF
 )
 
-  _ntnxlab_domain_profile_id=$(curl ${CURL_HTTP_OPTS} -u ${ERA_USER}:${ERA_PASSWORD} -X POST "https://${ERA_HOST}/era/v0.8/profiles" --data "${HTTP_JSON_BODY}" | jq -r '.id' | tr -d \")
+  _ntnxlab_domain_profile_id=$(curl ${CURL_HTTP_OPTS} -u ${ERA_USER}:${ERA_PASSWORD} -X POST "https://${ERA_HOST}/era/v0.9/profiles" --data "${HTTP_JSON_BODY}" | jq -r '.id' | tr -d \")
 
 log "Created NTNXLAB Domain Profile with ID |${_ntnxlab_domain_profile_id}|"
 
@@ -1285,9 +1357,168 @@ HTTP_JSON_BODY=$(cat <<EOF
 EOF
 )
 
-  _oracle_param_profile_id=$(curl ${CURL_HTTP_OPTS} -u ${ERA_USER}:${ERA_PASSWORD} -X POST "https://${ERA_HOST}/era/v0.8/profiles" --data "${HTTP_JSON_BODY}" | jq -r '.id' | tr -d \")
+  _oracle_param_profile_id=$(curl ${CURL_HTTP_OPTS} -u ${ERA_USER}:${ERA_PASSWORD} -X POST "https://${ERA_HOST}/era/v0.9/profiles" --data "${HTTP_JSON_BODY}" | jq -r '.id' | tr -d \")
 
 log "Created ORACLE_SMALL_PARAMS Parameters Profile with ID |${_oracle_param_profile_id}|"
+
+## Get the Super Admin Role ID ##
+log "Getting the Super Admin Role ID"
+
+  _role_id=$(curl ${CURL_HTTP_OPTS} -u ${ERA_USER}:${ERA_PASSWORD} -X GET "https://${ERA_HOST}/era/v0.9/roles" --data '{}' | jq '.[] | select(.name == "Super Admin") | .id' | tr -d \")
+
+log "Super Admin Role ID |${_role_id}|"
+
+## Create Users with Super Admin Role ##
+log "Creating Era Users with Super Admin Role"
+
+for _user in "${USERS[@]}" ; do
+
+log "Creating l${_user}"
+
+HTTP_JSON_BODY=$(cat <<EOF
+{
+  "internalUser": false,
+  "roles": [
+    "${_role_id}"
+  ],
+  "isExternalAuth": false,
+  "username": "${_user}",
+  "password": "${ERA_PASSWORD}",
+  "passwordExpired": true
+}
+EOF
+)
+
+  _user_id=$(curl ${CURL_HTTP_OPTS} -u ${ERA_USER}:${ERA_PASSWORD} -X POST "https://${ERA_HOST}/era/v0.9/users" --data "${HTTP_JSON_BODY}" | jq -r '.id' | tr -d \")
+
+log "Created User ${_user} with ID |${_user_id}|"
+
+done
+
+log "Era Config Complete"
+
+#set +x
+
+}
+
+#########################################################################################################################################
+# Routine to Clone MSSQL Source VMs
+#########################################################################################################################################
+
+function clone_mssql_source_vms() {
+  local CURL_HTTP_OPTS=" --max-time 25 --silent --header Content-Type:application/json --header Accept:application/json  --insecure "
+
+log "Start Cloning ${MSSQL_SourceVM}"
+
+log "PE Cluster IP |${PE_HOST}|"
+log "PC IP |${PC_HOST}|"
+
+set -x
+
+## Get Source VM UUID ##
+log "-------------------------------------"
+log "Get ${MSSQL_SourceVM} ID"
+
+  _mssql_sourcevm_id=$(curl ${CURL_HTTP_OPTS} --request POST 'https://localhost:9440/api/nutanix/v3/vms/list' --user ${PRISM_ADMIN}:${PE_PASSWORD} --data '{"kind":"vm","filter": "vm_name==Win2016SQLSource"}'  | jq -r '.entities[] | .metadata.uuid' | tr -d \")
+
+log "${MSSQL_SourceVM} ID: |${_mssql_sourcevm_id}|"
+
+## Deploy UserXX Clones ##
+log "-------------------------------------"
+log "Cloning ${MSSQL_SourceVM}"
+
+for _user in "${USERS[@]}" ; do
+
+  ClonedVM="${_user}_${MSSQL_SourceVM}"
+
+  log "Cloning ${MSSQL_SourceVM} for $_user started.."
+  log "Cloned VMs Name will be ${ClonedVM}"
+
+HTTP_JSON_BODY=$(cat <<EOF
+{
+  "spec_list": [
+    {
+      "name": "${ClonedVM}"
+    }
+  ]
+}
+EOF
+)
+
+log "Cloning VM Now"
+log "-------------------------------------"
+log $HTTP_JSON_BODY
+
+  _task_id=$(curl ${CURL_HTTP_OPTS} --request POST "https://${PE_HOST}:9440/PrismGateway/services/rest/v2.0/vms/${_mssql_sourcevm_id}/clone" --user ${PRISM_ADMIN}:${PE_PASSWORD} --data "${HTTP_JSON_BODY}" | jq -r '.task_uuid' | tr -d \")
+
+  log "Task uuid for Cloning ${MSSQL_SourceVM} is $_task_id  ....."
+  #sleep 240
+  if [ -z "$_task_id" ]; then
+       log "Cloning ${MSSQL_SourceVM} has encountered an error..."
+  else
+       log "Cloning ${MSSQL_SourceVM} started.."
+       set _loops=0 # Reset the loop counter so we restart the amount of loops we need to run
+       # Run the progess checker
+       loop
+  fi
+
+## Get Newly Cloned VM"s UUID ##
+sleep 60
+log "Get ${ClonedVM} ID"
+
+HTTP_JSON_BODY=$(cat <<EOF
+{
+  "kind":"vm",
+  "vm_name==${ClonedVM}"
+}
+EOF
+)
+
+  log "Getting UUID Now"
+  log $HTTP_JSON_BODY
+
+  _cloned_vm_id=$(curl ${CURL_HTTP_OPTS} --request POST 'https://localhost:9440/api/nutanix/v3/vms/list' --user ${PRISM_ADMIN}:${PE_PASSWORD} --data "${HTTP_JSON_BODY}"  | jq -r '.entities[] | .metadata.uuid' | tr -d \")
+
+log "${ClonedVM} ID: |${_cloned_vm_id}|"
+
+## Power Cloned VM On ##
+
+log "Powering on VM Now"
+
+HTTP_JSON_BODY=$(cat <<EOF
+{
+    "spec": {
+        "name": "${ClonedVM}",
+        "resources": {
+            "hardware_clock_timezone": "UTC",
+            "power_state": "ON"
+        }
+    },
+    "api_version": "3.0",
+    "metadata": {
+        "kind": "vm",
+        "spec_version": 0
+    }
+}
+EOF
+)
+
+_task_id=$(curl ${CURL_HTTP_OPTS} --request PUT "https://${PE_HOST}:9440/api/nutanix/v3/vms/${_cloned_vm_id}" --user ${PRISM_ADMIN}:${PE_PASSWORD} --data "${HTTP_JSON_BODY}" | jq -r '.status.execution_context.task_uuid' | tr -d \")
+
+log "Task uuid for Powering on VM is $_task_id  ....."
+
+if [ -z "$_task_id" ]; then
+     log "Powering on VM has encountered an error..."
+else
+     log "Powering on VM started.."
+     set _loops=0 # Reset the loop counter so we restart the amount of loops we need to run
+     # Run the progess checker
+     loop
+fi
+
+done
+
+log "Cloning ${MSSQL_SourceVM} Comnplete"
 
 set +x
 
@@ -1308,130 +1539,69 @@ function pc_project() {
   local _nw_uuid
   local CURL_HTTP_OPTS=" --max-time 25 --silent --header Content-Type:application/json --header Accept:application/json  --insecure "
 
-# Creating User Group
-log "Creating User Group"
-
-HTTP_JSON_BODY=$(cat <<EOF
-{
-  "api_version": "3.1.0",
-  "metadata": {
-    "kind": "user_group"
-    },
-  "spec": {
-    "resources": {
-      "directory_service_user_group": {
-        "distinguished_name": "cn=ssp admins,cn=users,dc=ntnxlab,dc=local"
-      }
-    }
-  }
-}
-EOF
-)
-
-  log "Creating User Group Now"
-  log $HTTP_JSON_BODY
-
-  _task_id=$(curl ${CURL_HTTP_OPTS} --user ${PRISM_ADMIN}:${PE_PASSWORD} -X POST  --data "${HTTP_JSON_BODY}" 'https://localhost:9440/api/nutanix/v3/user_groups' | jq -r '.status.execution_context.task_uuid' | tr -d \")
-
-  log "Task uuid for the User Group Create is $_task_id  ....."
-
-  if [ -z "$_task_id" ]; then
-       log "User Group Create has encountered an error..."
-  else
-       log "User Group Create started.."
-       set _loops=0 # Reset the loop counter so we restart the amount of loops we need to run
-       # Run the progess checker
-       loop
-  fi
-
-# Get the User Group UUID
-log "Get User Group UUID"
-
-_user_group_uuid=$(curl ${CURL_HTTP_OPTS} --request POST 'https://localhost:9440/api/nutanix/v3/user_groups/list' --user ${PRISM_ADMIN}:${PE_PASSWORD} --data '{}' | jq -r '.entities[] | .metadata.uuid' | tr -d \")
+set -x
 
 # Get the Network UUIDs
+log "-------------------------------------"
 log "Get cluster network UUID"
 
 _nw_uuid=$(curl ${CURL_HTTP_OPTS} --request POST 'https://localhost:9440/api/nutanix/v3/subnets/list' --user ${PRISM_ADMIN}:${PE_PASSWORD} --data '{"kind":"subnet","filter": "name==Primary"}' | jq -r '.entities[] | .metadata.uuid' | tr -d \")
 
+log "NW UUID = ${_nw_uuid}"
+
 # Get the Role UUIDs
+log "-------------------------------------"
 log "Get Role UUID"
 
 _role_uuid=$(curl ${CURL_HTTP_OPTS}--request POST 'https://localhost:9440/api/nutanix/v3/roles/list' --user ${PRISM_ADMIN}:${PE_PASSWORD} --data '{"kind":"role","filter":"name==Project Admin"}' | jq -r '.entities[] | .metadata.uuid' | tr -d \")
 
+log "Role UUID = ${_role_uuid}"
+
 # Get the PC Account UUIDs
+log "-------------------------------------"
 log "Get PC Account  UUID"
 
-_pc_account_uuid=$(curl ${CURL_HTTP_OPTS} --request POST 'https://localhost:9440/api/nutanix/v3/accounts/list' --user ${PRISM_ADMIN}:${PE_PASSWORD} --data '{"kind":"account","filter":"type==nutanix_pc"}' | jq -r '.entities[] | .status.resources.data.cluster_account_reference_list[0].resources.data.pc_account_uuid' | tr -d \")
+_pc_account_uuid=$(curl ${CURL_HTTP_OPTS} --request POST 'https://localhost:9440/api/nutanix/v3/accounts/list' --user ${PRISM_ADMIN}:${PE_PASSWORD} --data '{"kind":"account","filter":"type==nutanix_pc"}' | jq -r '.entities[] | .metadata.uuid' | tr -d \")
 
-log "Create BootcampInfra Project ..."
-log "User Group UUID = ${_user_group_uuid}"
-log "NW UUID = ${_nw_uuid}"
-log "Role UUID = ${_role_uuid}"
 log "PC Account UUID = ${_pc_account_uuid}"
 
+## Create Project ##
+log "-------------------------------------"
+log "Create BootcampInfra Project ..."
 
 HTTP_JSON_BODY=$(cat <<EOF
 {
-  "api_version": "3.1",
-  "metadata": {
-	"kind": "project"
-  },
-  "spec": {
-  	"access_control_policy_list": [
-  	{
-  		"operation": "ADD",
-  		"metadata": {
-			"kind": "access_control_policy"
-		},
-  		"acp": {
-  			"name": "${_name}",
-  			"resources": {
-  				"role_reference": {
-  					"kind": "role",
-					  "name": "Project Admin",
-					  "uuid": "${_role_uuid}"
-  				},
-  				"user_group_reference_list": [
-        		{
-        			"kind": "user_group",
-        			"name": "CN=SSP Admins,CN=Users,DC=ntnxlab,DC=local",
-        			"uuid": "${_user_group_uuid}"
-        		}
-    			]
-  			}
-  		}
-  	}
-  	],
-	"project_detail": {
-  	"name": "${_name}",
-  	"resources": {
-    	"account_reference_list": [
-      	{
-        	"kind": "account",
-			    "name": "nutanix_pc",
-			    "uuid": "${_pc_account_uuid}"
-      	}
-    	],
-    	"subnet_reference_list": [
-      	{
-        	"kind": "subnet",
-        	"name": "Primary",
-        	"uuid": "${_nw_uuid}"
-      	}
-    	],
-    	"external_user_group_reference_list": [
-        {
-          "kind": "user_group",
-          "name": "CN=SSP Admins,CN=Users,DC=ntnxlab,DC=local",
-          "uuid": "${_user_group_uuid}"
-        }
-    	]
-  	}
-	},
-	"user_list": [],
-	"user_group_list": []
-  }
+   "api_version":"3.1.0",
+   "metadata":{
+      "kind":"project"
+   },
+   "spec":{
+      "name":"BootcampInfra",
+      "resources":{
+         "account_reference_list":[
+            {
+               "uuid":"${_pc_account_uuid}",
+               "kind":"account",
+               "name":"nutanix_pc"
+            }
+         ],
+         "subnet_reference_list":[
+            {
+               "kind":"subnet",
+               "name": "Primary",
+        	   "uuid": "${_nw_uuid}"
+            }
+         ],
+         "user_reference_list":[
+            {
+               "kind":"user",
+               "name":"admin",
+               "uuid":"00000000-0000-0000-0000-000000000000"
+            }
+         ],
+         "environment_reference_list":[]
+      }
+   }
 }
 EOF
 )
@@ -1439,7 +1609,7 @@ EOF
   echo "Creating Calm Project Create Now"
   echo $HTTP_JSON_BODY
 
-  _task_id=$(curl ${CURL_HTTP_OPTS} --user ${PRISM_ADMIN}:${PE_PASSWORD} -X POST  --data "${HTTP_JSON_BODY}" 'https://localhost:9440/api/nutanix/v3/projects_internal' | jq -r '.status.execution_context.task_uuid' | tr -d \")
+  _task_id=$(curl ${CURL_HTTP_OPTS} --user ${PRISM_ADMIN}:${PE_PASSWORD} -X POST  --data "${HTTP_JSON_BODY}" 'https://localhost:9440/api/nutanix/v3/projects' | jq -r '.status.execution_context.task_uuid' | tr -d \")
 
   log "Task uuid for the Calm Project Create is " $_task_id " ....."
   #Sleep 60
@@ -1456,6 +1626,8 @@ EOF
   fi
 
   log "_ssp_connect=|${_ssp_connect}|"
+
+set +x
 
 }
 

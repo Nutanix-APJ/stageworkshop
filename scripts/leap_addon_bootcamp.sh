@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# -x
+ #-x
 
 #__main()__________
 
@@ -18,11 +18,7 @@ case ${1} in
   PE | pe )
     . lib.pe.sh
 
-    export AUTH_SERVER='AutoAD'
-    # Networking needs for Era Bootcamp
-	  #export NW2_NAME='EraManaged'
-    export NW2_DHCP_START="${IPV4_PREFIX}.132"
-    export NW2_DHCP_END="${IPV4_PREFIX}.219"
+    export _external_nw_name="${1}"
 
     args_required 'PE_HOST PC_LAUNCH'
     ssh_pubkey & # non-blocking, parallel suitable
@@ -30,14 +26,7 @@ case ${1} in
     dependencies 'install' 'sshpass' && dependencies 'install' 'jq' \
     && pe_license \
     && pe_init \
-    && create_era_container \
-    && era_network_configure \
-    && authentication_source \
-    && pe_auth \
-    && deploy_era \
-    && deploy_mssql \
-    && deploy_oracle_19c
-
+    && network_configure
 
     if (( $? == 0 )) ; then
       pc_install "${NW1_NAME}" \
@@ -57,7 +46,6 @@ case ${1} in
         log "PE = https://${PE_HOST}:9440"
         log "PC = https://${PC_HOST}:9440"
 
-
         #&& dependencies 'remove' 'jq' & # parallel, optional. Versus: $0 'files' &
         #dependencies 'remove' 'sshpass'
         finish
@@ -72,21 +60,17 @@ case ${1} in
   PC | pc )
     . lib.pc.sh
 
-    #export BUCKETS_DNS_IP="${IPV4_PREFIX}.16"
-    #export BUCKETS_VIP="${IPV4_PREFIX}.17"
-    #export OBJECTS_NW_START="${IPV4_PREFIX}.18"
-    #export OBJECTS_NW_END="${IPV4_PREFIX}.21"
-
-    export _prio_images_arr=(\
-    )
-
     export QCOW2_IMAGES=(\
+      Windows2016.qcow2 \
+      CentOS7.qcow2 \
       WinToolsVM.qcow2 \
       Linux_ToolsVM.qcow2 \
+
     )
     export ISO_IMAGES=(\
       Nutanix-VirtIO-1.1.5.iso \
     )
+
 
     run_once
 
@@ -132,11 +116,9 @@ case ${1} in
     && calm_enable \
     && lcm \
     && pc_project \
-    && priority_images \
-    && images \
     && flow_enable \
     && pc_cluster_img_import \
-    && configure_era \
+    && images \
     && prism_check 'PC'
 
     log "Non-blocking functions (in development) follow."

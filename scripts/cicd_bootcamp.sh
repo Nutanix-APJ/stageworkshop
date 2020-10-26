@@ -19,10 +19,6 @@ case ${1} in
     . lib.pe.sh
 
     export AUTH_SERVER='AutoAD'
-    # Networking needs for Era Bootcamp
-	  #export NW2_NAME='EraManaged'
-    export NW2_DHCP_START="${IPV4_PREFIX}.132"
-    export NW2_DHCP_END="${IPV4_PREFIX}.219"
 
     args_required 'PE_HOST PC_LAUNCH'
     ssh_pubkey & # non-blocking, parallel suitable
@@ -30,14 +26,9 @@ case ${1} in
     dependencies 'install' 'sshpass' && dependencies 'install' 'jq' \
     && pe_license \
     && pe_init \
-    && create_era_container \
-    && era_network_configure \
+    && network_configure \
     && authentication_source \
-    && pe_auth \
-    && deploy_era \
-    && deploy_mssql \
-    && deploy_oracle_19c
-
+    && pe_auth
 
     if (( $? == 0 )) ; then
       pc_install "${NW1_NAME}" \
@@ -57,7 +48,6 @@ case ${1} in
         log "PE = https://${PE_HOST}:9440"
         log "PC = https://${PC_HOST}:9440"
 
-
         #&& dependencies 'remove' 'jq' & # parallel, optional. Versus: $0 'files' &
         #dependencies 'remove' 'sshpass'
         finish
@@ -72,15 +62,10 @@ case ${1} in
   PC | pc )
     . lib.pc.sh
 
-    #export BUCKETS_DNS_IP="${IPV4_PREFIX}.16"
-    #export BUCKETS_VIP="${IPV4_PREFIX}.17"
-    #export OBJECTS_NW_START="${IPV4_PREFIX}.18"
-    #export OBJECTS_NW_END="${IPV4_PREFIX}.21"
-
-    export _prio_images_arr=(\
-    )
 
     export QCOW2_IMAGES=(\
+      Windows2016.qcow2 \
+      CentOS7.qcow2 \
       WinToolsVM.qcow2 \
       Linux_ToolsVM.qcow2 \
     )
@@ -126,17 +111,26 @@ case ${1} in
     && pc_dns_add \
     && pc_ui \
     && pc_auth \
-    && pc_smtp
+
+    # If we run this in a none HPOC we must skip the SMTP config as we have no idea what the SMTP server will be
+    if [[ ! -z ${SMTP_SERVER_ADDRESS}  ]]; then
+      pc_smtp
+    fi
 
     ssp_auth \
     && calm_enable \
+    && karbon_enable \
+    && objects_enable \
     && lcm \
     && pc_project \
-    && priority_images \
-    && images \
+    && object_store \
+    && karbon_image_download \
     && flow_enable \
     && pc_cluster_img_import \
-    && configure_era \
+    && upload_karbon_calm_blueprint \
+    && sleep 30 \
+    && upload_CICDInfra_calm_blueprint \
+    && images \
     && prism_check 'PC'
 
     log "Non-blocking functions (in development) follow."
